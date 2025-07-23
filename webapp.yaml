@@ -1,0 +1,90 @@
+# Deployment – high availability in a multi-zone cluster
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: webapp
+  labels:
+    app: webapp
+spec:
+  replicas: 4  # Ensures resilience and handles peak load
+  selector:
+    matchLabels:
+      app: webapp
+  template:
+    metadata:
+      labels:
+        app: webapp
+    spec:
+      containers:
+      - name: webapp
+        image: nginx:stable  # Placeholder image, replace with real app image
+        resources:
+          requests:
+            cpu: 300m     # Request 0.3 CPU to handle startup burst (better expressed as 300m)
+            memory: 128Mi # Stable memory requirement
+          limits:
+            cpu: 500m
+            memory: 256Mi
+        startupProbe:
+          httpGet:
+            path: /
+            port: 80
+          failureThreshold: 20  # Wait up to ~60 seconds for app to start (20 * 3s)
+          periodSeconds: 3
+          # startupProbe prevents premature restart during long init
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          # Signals when pod is ready to serve traffic
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 10
+          periodSeconds: 15
+          # Checks if pod is alive; restarts if failing
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchLabels:
+                app: webapp
+            topologyKey: "topology.kubernetes.io/zone"
+            # Spreads pods across zones to maximize availability
+
+---
+# Horizontal Pod Autoscaler to scale between 1 (night) and 5 (peak) replicas
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: webapp
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: webapp
+  minReplicas: 1      # Scale down at night for minimal resource use
+  maxReplicas: 5      # Scale up at peak load
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 50
+        # Scale when average CPU usage exceeds 50%
+
+---
+# PodDisruptionBudget to ensure high availability during voluntary disruptions
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: webapp
+spec:
+  minAvailable: 3     # At least 3 pods must be available to maintain availability
+  selector:
+    matchLabels:
+      app: webapp
